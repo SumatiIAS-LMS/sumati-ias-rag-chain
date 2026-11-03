@@ -26,3 +26,5 @@ VECTOR_INDEX_NAME = "lecture_vector_index"
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
 EMBEDDING_DIMENSIONS = 384
+
+CONTEXT_EXPIREY = 60 * 60 * 24 * 7 # in seconds

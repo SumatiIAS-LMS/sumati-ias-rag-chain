@@ -13,7 +13,13 @@ from pymongo import MongoClient
 
 from config import MONGODB_URI
 from ingest import ingest_pdf
-from rag_chain import get_qa_chain, lecture_exists
+from rag_chain import (
+    get_conversation,
+    get_qa_chain,
+    lecture_exists,
+    save_conversation,
+    save_question,
+)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
@@ -128,7 +134,8 @@ def home():
     return jsonify({
         "message": "RAG pipeline server is running",
         "documents": "POST /documents with JSON {\"url\": \"https://.../file.pdf\"}",
-        "ask": "POST /ask with JSON {\"vector_db_id\": \"...\", \"question\": \"...\"}",
+        "ask": "POST /ask with JSON {\"lectureId\": \"...\", \"userId\": \"...\", \"question\": \"...\"}",
+        "history": "GET /history?lectureId=...&userId=...",
     })
 
 
@@ -184,6 +191,47 @@ def upload_document():
 
 
 
+@app.route("/history", methods=["GET"])
+def history():
+    data = request.args
+    body = request.get_json(silent=True)
+    if isinstance(body, dict):
+        data = body
+
+    lecture_id = (
+        data.get("lectureId")
+        or data.get("vector_db_id")
+        or ""
+    ).strip()
+
+    user_id = (data.get("userId") or "").strip()
+
+    if not lecture_id:
+        return jsonify({
+            "error": "lectureId is required"
+        }), 400
+
+    if not user_id:
+        return jsonify({
+            "error": "user is required"
+        }), 400
+
+    try:
+        if not lecture_exists(lecture_id):
+            return jsonify({
+                "error": "lecture not found"
+            }), 404
+
+        return jsonify(get_conversation(user_id, lecture_id))
+
+    except Exception:
+        app.logger.exception("History lookup failed")
+
+        return jsonify({
+            "error": "Unable to fetch history"
+        }), 500
+
+
 @app.route("/ask", methods=["POST"])
 def ask():
 
@@ -221,9 +269,15 @@ def ask():
                 "error": "lecture not found"
             }), 404
 
-        result = get_qa_chain(user_id, lecture_id).invoke({
+        chain, memory = get_qa_chain(user_id, lecture_id)
+
+        save_question(user_id, lecture_id, question)
+
+        result = chain.invoke({
             "question": question
         })
+
+        save_conversation(user_id, lecture_id, memory)
 
         return jsonify({
             "lectureId": lecture_id,

@@ -67,4 +67,3 @@ if __name__ == "__main__":
         file_path="data/sample_rag_test.pdf",
         lecture_id="test_lecture_123",
     )
-    print(summary)

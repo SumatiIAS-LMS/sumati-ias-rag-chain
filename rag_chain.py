@@ -16,7 +16,8 @@ from config import (
     MONGODB_URI,
     MONGODB_DATABASE,
     MONGODB_COLLECTION,
-    VECTOR_INDEX_NAME
+    VECTOR_INDEX_NAME,
+    CONTEXT_EXPIREY
 )
 
 mongo_client = MongoClient(MONGODB_URI)
@@ -35,13 +36,11 @@ chat_collection.create_index(
 
 # Automatically delete expired conversations
 chat_collection.create_index(
-    "expiresAt",
-    expireAfterSeconds=10
+    [("expiresAt", ASCENDING)],
+    expireAfterSeconds=CONTEXT_EXPIREY
 )
 
 _embeddings = None
-_chains = {}
-
 
 def get_embeddings():
     global _embeddings
@@ -76,7 +75,7 @@ def build_rag_chain(lecture_id, memory):
             "k": 4,
             "pre_filter": {
                 "lectureId": {
-                    "$eq": lecture_id
+                    "$eq": ObjectId(lecture_id)
                 }
             },
         },
@@ -91,6 +90,38 @@ def build_rag_chain(lecture_id, memory):
         llm=llm,
         retriever=retriever,
         memory=memory,
+    )
+
+
+def _conversation_filter(user_id, lecture_id):
+    return {
+        "userId": ObjectId(user_id),
+        "lectureId": ObjectId(lecture_id),
+    }
+
+
+def _conversation_timestamps(now):
+    return {
+        "updatedAt": now,
+        "expiresAt": now + timedelta(seconds=CONTEXT_EXPIREY),
+    }
+
+
+def save_question(user_id, lecture_id, question):
+    now = datetime.now(timezone.utc)
+
+    chat_collection.update_one(
+        _conversation_filter(user_id, lecture_id),
+        {
+            "$push": {
+                "messages": {
+                    "role": "human",
+                    "content": question,
+                }
+            },
+            "$set": _conversation_timestamps(now),
+        },
+        upsert=True,
     )
 
 
@@ -114,25 +145,44 @@ def save_conversation(user_id, lecture_id, memory):
             })
 
     chat_collection.update_one(
-        {
-            "userId": str(user_id),
-            "lectureId": str(lecture_id)
-        },
+        _conversation_filter(user_id, lecture_id),
         {
             "$set": {
                 "messages": messages,
-                "updatedAt": now,
-                "expiresAt": now + timedelta(days=2)
+                **_conversation_timestamps(now),
             }
         },
         upsert=True
     )
 
 
+def get_conversation(user_id, lecture_id):
+    conversation = chat_collection.find_one(
+        _conversation_filter(user_id, lecture_id),
+        {"_id": 0, "messages": 1, "updatedAt": 1},
+    )
+
+    if not conversation:
+        return {
+            "userId": str(user_id),
+            "lectureId": str(lecture_id),
+            "messages": [],
+        }
+
+    updated_at = conversation.get("updatedAt")
+
+    return {
+        "userId": str(user_id),
+        "lectureId": str(lecture_id),
+        "messages": conversation.get("messages", []),
+        "updatedAt": updated_at.isoformat() if updated_at else None,
+    }
+
+
 def get_qa_chain(user_id, lecture_id):
     conversation = chat_collection.find_one({
-        "userId": str(user_id),
-        "lectureId": str(lecture_id)
+        "userId": ObjectId(user_id),
+        "lectureId": ObjectId(lecture_id)
     })
 
     memory = ConversationBufferMemory(
@@ -144,6 +194,7 @@ def get_qa_chain(user_id, lecture_id):
 
     # Restore previous conversation
     if conversation:
+        print("conversation ", conversation)
         for msg in conversation.get("messages", []):
             if msg["role"] == "human":
                 memory.chat_memory.add_message(
@@ -153,7 +204,8 @@ def get_qa_chain(user_id, lecture_id):
                 memory.chat_memory.add_message(
                     AIMessage(content=msg["content"])
                 )
-        return build_rag_chain(lecture_id, memory)
+
+    return build_rag_chain(lecture_id, memory), memory
 
 def lecture_exists(lecture_id):
 
