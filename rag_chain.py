@@ -1,8 +1,8 @@
 from langchain_classic.chains import ConversationalRetrievalChain
 from langchain_classic.memory import ConversationBufferMemory
+from langchain_classic.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+from langchain_community import FastEmbedEmbeddings
 from pymongo import MongoClient, ASCENDING
 from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_core.messages import HumanMessage, AIMessage
@@ -86,10 +86,32 @@ def build_rag_chain(lecture_id, memory):
         temperature=0,
     )
 
+    qa_prompt = PromptTemplate(
+        input_variables=["context", "question"],
+        template="""
+            You are an AI Lecture Assistant. Answer using the provided context as your primary reference. Do not mention the context, retrieved documents, sources, or where the information came from.
+
+            If the required information is missing or partially covered, supplement it using reliable online sources without mentioning the retrieval process. Never invent facts or present uncertain information as factual.
+
+            Keep responses accurate, concise, clear, and student-friendly.
+
+            Context:
+            {context}
+
+            Question:
+            {question}
+
+            Answer:
+            """
+    )
+
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
         retriever=retriever,
         memory=memory,
+        combine_docs_chain_kwargs={
+            "prompt": qa_prompt
+        }
     )
 
 
