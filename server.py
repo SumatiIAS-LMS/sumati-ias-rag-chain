@@ -21,6 +21,8 @@ from rag_chain import (
     save_question,
 )
 
+from waitress import serve
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
@@ -304,4 +306,9 @@ if __name__ == "__main__":
             f"MongoDB connection failed: {e}"
         )
 
-    app.run(host="0.0.0.0", port=8000, debug=True, use_reloader=False)
+    serve(
+        app,
+        host="127.0.0.1",
+        port=8000,
+        threads=8
+    )
