@@ -2,7 +2,7 @@ from langchain_classic.chains import ConversationalRetrievalChain
 from langchain_classic.memory import ConversationBufferMemory
 from langchain_classic.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
-from langchain_community import FastEmbedEmbeddings
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from pymongo import MongoClient, ASCENDING
 from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_core.messages import HumanMessage, AIMessage
