@@ -169,6 +169,12 @@ def upload_document():
             lecture_id
         )
 
+        summary["filename"] = filename
+        summary["url"] = url
+        summary["lectureId"] = lecture_id
+    
+        return jsonify(summary)
+
     except ValueError as exc:
 
         if os.path.isfile(stored_path):
@@ -185,11 +191,13 @@ def upload_document():
 
         return jsonify({"error": "PDF ingestion failed"}), 500
 
-    summary["filename"] = filename
-    summary["url"] = url
-    summary["lectureId"] = lecture_id
-
-    return jsonify(summary)
+    finally:
+        if os.path.isfile(stored_path):
+            os.remove(stored_path)
+            app.logger.info(
+                "Temporary PDF deleted: %s",
+                stored_path
+            )
 
 
 
