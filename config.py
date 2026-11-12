@@ -21,10 +21,24 @@ MONGODB_DATABASE = "sumatiias"
 
 MONGODB_COLLECTION = "lecture_chunks"
 
+MONGODB_WEB_EDITORIAL_COLLECTION = "webeditorials"
+
+MONGODB_WEB_HOT_TOPIC_COLLECTION = "webhottopics"
+
+MONGODB_WEB_CURRENT_AFFAIRS_COLLECTION = "currentaffairs"
+
+MONGODB_DATA_CHUNKS_COLLECTION = "sumati_ias_data_chunks"
+
 VECTOR_INDEX_NAME = "lecture_vector_index"
+
+SUMATI_IAS_DATA_CHUNKS_VECTOR_INDEX_NAME = "sumati_ias_data_chunks_vector_index"
 
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
 EMBEDDING_DIMENSIONS = 384
 
 CONTEXT_EXPIREY = 60 * 60 * 24 * 7 # in seconds
+
+WEB_CONTEXT_EXPIRY = 60 * 60 * 24 # in seconds
+
+WEB_DAILY_MESSAGE_LIMIT = 20

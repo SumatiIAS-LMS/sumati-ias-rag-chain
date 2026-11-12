@@ -1,8 +1,6 @@
 import ipaddress
 import os
-# import re
 import socket
-# import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -11,23 +9,54 @@ from flask import Flask, jsonify, request
 from werkzeug.utils import secure_filename
 from pymongo import MongoClient
 
-from config import MONGODB_URI
-from ingest import ingest_pdf
-from rag_chain import (
-    get_conversation,
-    get_qa_chain,
-    lecture_exists,
-    save_conversation,
-    save_question,
+from config import (
+    MONGODB_URI,
+    MONGODB_WEB_CURRENT_AFFAIRS_COLLECTION,
+    MONGODB_WEB_EDITORIAL_COLLECTION,
+    MONGODB_WEB_HOT_TOPIC_COLLECTION
 )
 
 from waitress import serve
 
-app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+def create_app():
+    app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+
+    @app.errorhandler(413)
+    def file_too_large():
+        return jsonify({"error": "pdf exceeds the 50 MB limit"}), 413
+
+    @app.errorhandler(404)
+    def not_found():
+        return jsonify({"error": "resource not found"}), 404
+
+    from routes.web_history import web_history_bp
+    from routes.home import home_bp
+    from routes.upload_documents import upload_documents_bp
+    from routes.upload_webpage_chunks import web_page_bp
+    from routes.lecture_ask import lecture_ask_bp
+    from routes.lecture_chat_history import lecture_chat_history_bp
+    from routes.web_ask import web_ask_bp
+
+    app.register_blueprint(web_history_bp)
+    app.register_blueprint(home_bp)
+    app.register_blueprint(web_page_bp)
+    app.register_blueprint(upload_documents_bp)
+    app.register_blueprint(lecture_ask_bp)
+    app.register_blueprint(lecture_chat_history_bp)
+    app.register_blueprint(web_ask_bp)
+
+    return app
+
 
 UPLOAD_DIR = "uploads"
 MAX_PDF_BYTES = 50 * 1024 * 1024
+
+RESOURCE_CONFIG = {
+    "current-affair": (MONGODB_WEB_CURRENT_AFFAIRS_COLLECTION, "title"),
+    "web-hot-topic": (MONGODB_WEB_HOT_TOPIC_COLLECTION, "title"),        # change if it has its own collection
+    "web-editorial": (MONGODB_WEB_EDITORIAL_COLLECTION, "editorialTitle"),  # change if it has its own collection
+}
 
 client = MongoClient(MONGODB_URI)
 
@@ -126,185 +155,6 @@ def request_data():
     return request.form
 
 
-@app.errorhandler(413)
-def file_too_large(_error):
-    return jsonify({"error": "pdf exceeds the 50 MB limit"}), 413
-
-
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({
-        "message": "RAG pipeline server is running",
-        "documents": "POST /documents with JSON {\"url\": \"https://.../file.pdf\"}",
-        "ask": "POST /ask with JSON {\"lectureId\": \"...\", \"userId\": \"...\", \"question\": \"...\"}",
-        "history": "GET /history?lectureId=...&userId=...",
-    })
-
-
-@app.route("/documents", methods=["POST"])
-def upload_document():
-
-    data = request_data()
-
-    url = (data.get("url") or "").strip()
-    lecture_id = (data.get("lectureId") or "").strip()
-
-    if not url:
-        return jsonify({"error": "url is required"}), 400
-
-    if not lecture_id:
-        return jsonify({"error": "lectureId is required"}), 400
-
-    stored_path = os.path.join(
-        UPLOAD_DIR,
-        f"{secure_filename(lecture_id)}.pdf"
-    )
-
-    try:
-
-        filename = download_pdf(url, stored_path)
-
-        summary = ingest_pdf(
-            stored_path,
-            lecture_id
-        )
-
-        summary["filename"] = filename
-        summary["url"] = url
-        summary["lectureId"] = lecture_id
-    
-        return jsonify(summary)
-
-    except ValueError as exc:
-
-        if os.path.isfile(stored_path):
-            os.remove(stored_path)
-
-        return jsonify({"error": str(exc)}), 400
-
-    except Exception as exc:
-
-        if os.path.isfile(stored_path):
-            os.remove(stored_path)
-
-        app.logger.exception("PDF ingestion failed")
-
-        return jsonify({"error": "PDF ingestion failed"}), 500
-
-    finally:
-        if os.path.isfile(stored_path):
-            os.remove(stored_path)
-            app.logger.info(
-                "Temporary PDF deleted: %s",
-                stored_path
-            )
-
-
-
-@app.route("/history", methods=["GET"])
-def history():
-    data = request.args
-    body = request.get_json(silent=True)
-    if isinstance(body, dict):
-        data = body
-
-    lecture_id = (
-        data.get("lectureId")
-        or data.get("vector_db_id")
-        or ""
-    ).strip()
-
-    user_id = (data.get("userId") or "").strip()
-
-    if not lecture_id:
-        return jsonify({
-            "error": "lectureId is required"
-        }), 400
-
-    if not user_id:
-        return jsonify({
-            "error": "user is required"
-        }), 400
-
-    try:
-        if not lecture_exists(lecture_id):
-            return jsonify({
-                "error": "lecture not found"
-            }), 404
-
-        return jsonify(get_conversation(user_id, lecture_id))
-
-    except Exception:
-        app.logger.exception("History lookup failed")
-
-        return jsonify({
-            "error": "Unable to fetch history"
-        }), 500
-
-
-@app.route("/ask", methods=["POST"])
-def ask():
-
-    data = request_data()
-
-    lecture_id = (
-        data.get("lectureId")
-        or data.get("vector_db_id")
-        or ""
-    ).strip()
-
-    question = (data.get("question") or "").strip()
-
-    user_id = (data.get("userId") or "").strip()
-
-    if not lecture_id:
-        return jsonify({
-            "error": "lectureId is required"
-        }), 400
-
-    if not question:
-        return jsonify({
-            "error": "question is required"
-        }), 400
-
-    if not user_id:
-        return jsonify({
-            "error": "user is required"
-        }), 400
-
-    try:
-
-        if not lecture_exists(lecture_id):
-            return jsonify({
-                "error": "lecture not found"
-            }), 404
-
-        chain, memory = get_qa_chain(user_id, lecture_id)
-
-        save_question(user_id, lecture_id, question)
-
-        result = chain.invoke({
-            "question": question
-        })
-
-        save_conversation(user_id, lecture_id, memory)
-
-        return jsonify({
-            "lectureId": lecture_id,
-            "question": question,
-            "answer": result["answer"],
-        })
-
-    except Exception:
-
-        app.logger.exception("RAG query failed")
-
-        return jsonify({
-            "error": "Unable to process question"
-        }), 500
-
-
-
 if __name__ == "__main__":
     try:
         client.admin.command("ping")
@@ -315,7 +165,7 @@ if __name__ == "__main__":
         )
 
     serve(
-        app,
+        create_app(),
         host="127.0.0.1",
         port=8000,
         threads=8
