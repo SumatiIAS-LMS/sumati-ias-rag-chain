@@ -56,11 +56,34 @@ def ask_web():
             raise
 
         used = slot["userMessageCount"]
+
+        sources = []
+        signed_urls = {}
+
+        from server import signed_source_url
+
+        for source in result["sources"] or []:
+            if(source["resourceType"] == "MAGAZINES"):
+                signed = dict(source)
+                signed["sourceUrl"] = (f"/magazine-ebook?id={signed["documentId"]}")
+                sources.append(signed)
+            else:
+                if not isinstance(source, dict):
+                    sources.append(source)
+                    continue
+
+                signed = dict(source)
+                signed["sourceUrl"] = signed_source_url(
+                    signed.get("sourceUrl") or "",
+                    signed_urls,
+                )
+                sources.append(signed)
+
         return jsonify({
             "question": question,
             "userId": user_id,
             "answer": result["answer"],
-            "sources": result["sources"],
+            "sources": sources,
             "messagesUsed": used,
             "messagesRemaining": WEB_DAILY_MESSAGE_LIMIT - used,
             "expiresAt": _utc(slot["expiresAt"]).isoformat(),

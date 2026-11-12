@@ -211,6 +211,95 @@ def ingest_web_pages(pages: list[dict], chunks_collection) -> dict:
     }
 
 
+def ingest_extracted_documents(documents: list[dict], chunks_collection) -> dict:
+    """Chunk, embed, and store text using the same records as scraped pages.
+
+    Chunks already stored for the same document, resource type, and source
+    are removed only after the new chunks have been inserted.
+    """
+    ensure_indexes(chunks_collection)
+
+    results = []
+    inserted_total = 0
+
+    for document in documents:
+        source_url = (document.get("sourceUrl") or "").strip()
+        document_id = (document.get("documentId") or "").strip()
+        resource_type = (document.get("resourceType") or "").strip()
+        text = document.get("text") or ""
+        result = {
+            "documentId": document_id,
+            "sourceUrl": source_url,
+            "title": document.get("title") or "",
+            "slug": document.get("slug") or "",
+        }
+
+        if not source_url or not document_id or not resource_type:
+            result["error"] = "sourceUrl, documentId, and resourceType are required"
+            results.append(result)
+            continue
+
+        if not ObjectId.is_valid(document_id):
+            result["error"] = "documentId is not a valid id"
+            results.append(result)
+            continue
+
+        chunks = split_into_chunks(text)
+        if not chunks:
+            result["error"] = "document has no extractable text"
+            results.append(result)
+            continue
+
+        now = datetime.now(timezone.utc)
+        document_oid = ObjectId(document_id)
+        try:
+            vectors = get_embeddings().embed_documents(chunks)
+            if len(vectors) != len(chunks):
+                raise ValueError("embedding count did not match the chunks")
+
+            records = [
+                {
+                    "documentId": document_oid,
+                    "resourceType": resource_type,
+                    "sourceCollection": document.get("sourceCollection") or "",
+                    "sourceUrl": source_url,
+                    "title": document.get("title") or "",
+                    "slug": document.get("slug") or "",
+                    "pageTitle": document.get("pageTitle") or "",
+                    "chunkIndex": index,
+                    "text": chunk,
+                    "embedding": _as_vector(vectors[index]),
+                    "createdAt": now,
+                }
+                for index, chunk in enumerate(chunks)
+            ]
+            inserted = chunks_collection.insert_many(records)
+            chunks_collection.delete_many({
+                "documentId": document_oid,
+                "resourceType": resource_type,
+                "sourceUrl": source_url,
+                "_id": {"$nin": inserted.inserted_ids},
+            })
+        except Exception as exc:
+            print(f"[FAILED] {source_url} -> {exc}")
+            result["error"] = f"could not store chunks: {exc}"
+            results.append(result)
+            continue
+
+        inserted_count = len(inserted.inserted_ids)
+        inserted_total += inserted_count
+        result["pages"] = document.get("pages") or 0
+        result["chunks"] = inserted_count
+        result["inserted"] = inserted_count
+        results.append(result)
+        print(f"[OK] {source_url} -> {inserted_count} chunks")
+
+    return {
+        "inserted": inserted_total,
+        "results": results,
+    }
+
+
 def extract_urls(urls: list[str], output_dir: str = "output") -> None:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)

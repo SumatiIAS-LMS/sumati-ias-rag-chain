@@ -1,8 +1,11 @@
+import hashlib
+import hmac
 import ipaddress
 import os
 import socket
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from flask import Flask, jsonify, request
@@ -10,10 +13,15 @@ from werkzeug.utils import secure_filename
 from pymongo import MongoClient
 
 from config import (
+    CF_ACCESS_KEY_ID,
+    CF_S3_API_ENDPOINT,
+    CF_S3_BUCKET_NAME,
+    CF_SECRET_ACCESS_KEY,
     MONGODB_URI,
     MONGODB_WEB_CURRENT_AFFAIRS_COLLECTION,
     MONGODB_WEB_EDITORIAL_COLLECTION,
-    MONGODB_WEB_HOT_TOPIC_COLLECTION
+    MONGODB_WEB_HOT_TOPIC_COLLECTION,
+    PUBLIC_ASSET_BASE_URL,
 )
 
 from waitress import serve
@@ -34,6 +42,7 @@ def create_app():
     from routes.home import home_bp
     from routes.upload_documents import upload_documents_bp
     from routes.upload_webpage_chunks import web_page_bp
+    from routes.upload_public_pdf_chunks import public_pdf_bp
     from routes.lecture_ask import lecture_ask_bp
     from routes.lecture_chat_history import lecture_chat_history_bp
     from routes.web_ask import web_ask_bp
@@ -41,6 +50,7 @@ def create_app():
     app.register_blueprint(web_history_bp)
     app.register_blueprint(home_bp)
     app.register_blueprint(web_page_bp)
+    app.register_blueprint(public_pdf_bp)
     app.register_blueprint(upload_documents_bp)
     app.register_blueprint(lecture_ask_bp)
     app.register_blueprint(lecture_chat_history_bp)
@@ -100,6 +110,199 @@ def pdf_filename(url, headers):
         return "document.pdf"
 
     return filename
+
+
+def _sign(key, message):
+    return hmac.new(key, message.encode("utf-8"), hashlib.sha256).digest()
+
+
+def _r2_settings():
+    access_key = (CF_ACCESS_KEY_ID or "").strip()
+    secret_key = (CF_SECRET_ACCESS_KEY or "").strip()
+    endpoint = (CF_S3_API_ENDPOINT or "").strip().rstrip("/")
+    bucket = (CF_S3_BUCKET_NAME or "").strip()
+    parsed = urlparse(endpoint)
+
+    if (
+        not access_key
+        or not secret_key
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not bucket
+    ):
+        return None
+
+    return access_key, secret_key, endpoint, bucket, parsed.netloc
+
+
+def _object_uri(bucket, key):
+    return "/" + "/".join(
+        quote(part, safe="")
+        for part in [bucket, *key.strip("/").split("/")]
+    )
+
+
+def _signing_key(secret_key, datestamp, region, service):
+    signing_key = _sign(("AWS4" + secret_key).encode("utf-8"), datestamp)
+    signing_key = _sign(signing_key, region)
+    signing_key = _sign(signing_key, service)
+    return _sign(signing_key, "aws4_request")
+
+
+def presign_r2_get(key, expires=3600):
+    """Build a temporary download URL for an object key in the asset bucket."""
+    settings = _r2_settings()
+    if settings is None:
+        raise ValueError("stored file has no public url")
+
+    access_key, secret_key, endpoint, bucket, host = settings
+
+    now = datetime.now(timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    region = "auto"
+    service = "s3"
+    credential_scope = f"{datestamp}/{region}/{service}/aws4_request"
+    canonical_uri = _object_uri(bucket, key)
+    params = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{access_key}/{credential_scope}",
+        "X-Amz-Date": amz_date,
+        "X-Amz-Expires": str(expires),
+        "X-Amz-SignedHeaders": "host",
+    }
+    canonical_query = "&".join(
+        f"{quote(name, safe='')}={quote(params[name], safe='-')}"
+        for name in sorted(params)
+    )
+    canonical_headers = f"host:{host}\n"
+    canonical_request = "\n".join([
+        "GET",
+        canonical_uri,
+        canonical_query,
+        canonical_headers,
+        "host",
+        "UNSIGNED-PAYLOAD",
+    ])
+    string_to_sign = "\n".join([
+        "AWS4-HMAC-SHA256",
+        amz_date,
+        credential_scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+    ])
+    signing_key = _signing_key(secret_key, datestamp, region, service)
+    signature = hmac.new(
+        signing_key,
+        string_to_sign.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return f"{endpoint}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}"
+
+
+def r2_key_exists(key):
+    """Return whether this object key is present in the asset bucket."""
+    key = (key or "").strip()
+    settings = _r2_settings()
+    if not key or settings is None:
+        return False
+
+    access_key, secret_key, endpoint, bucket, host = settings
+    now = datetime.now(timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    region = "auto"
+    service = "s3"
+    payload_hash = "UNSIGNED-PAYLOAD"
+    credential_scope = f"{datestamp}/{region}/{service}/aws4_request"
+    canonical_uri = _object_uri(bucket, key)
+    canonical_headers = (
+        f"host:{host}\n"
+        f"x-amz-content-sha256:{payload_hash}\n"
+        f"x-amz-date:{amz_date}\n"
+    )
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    canonical_request = "\n".join([
+        "HEAD",
+        canonical_uri,
+        "",
+        canonical_headers,
+        signed_headers,
+        payload_hash,
+    ])
+    string_to_sign = "\n".join([
+        "AWS4-HMAC-SHA256",
+        amz_date,
+        credential_scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+    ])
+    signature = hmac.new(
+        _signing_key(secret_key, datestamp, region, service),
+        string_to_sign.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    authorization = (
+        "AWS4-HMAC-SHA256 "
+        f"Credential={access_key}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, "
+        f"Signature={signature}"
+    )
+    request = Request(
+        f"{endpoint}{canonical_uri}",
+        method="HEAD",
+        headers={
+            "Host": host,
+            "x-amz-content-sha256": payload_hash,
+            "x-amz-date": amz_date,
+            "Authorization": authorization,
+        },
+    )
+
+    try:
+        with build_opener().open(request, timeout=15) as response:
+            return 200 <= response.status < 300
+    except (HTTPError, URLError, TimeoutError, socket.timeout):
+        return False
+
+
+def signed_source_url(stored_value, cache=None):
+    """Sign an object key after confirming it exists. Leave web links unchanged."""
+    stored_value = (stored_value or "").strip()
+    if not stored_value or stored_value.lower().startswith(("http://", "https://")):
+        return stored_value
+
+    if cache is not None and stored_value in cache:
+        return cache[stored_value]
+
+    signed = stored_value
+    if r2_key_exists(stored_value):
+        try:
+            signed = presign_r2_get(stored_value)
+        except ValueError:
+            signed = stored_value
+
+    if cache is not None:
+        cache[stored_value] = signed
+    return signed
+
+
+def resolve_stored_file(stored_value):
+    """Return the stable source url and the url that can be downloaded."""
+    stored_value = (stored_value or "").strip()
+    if not stored_value:
+        raise ValueError("public url is missing")
+
+    if stored_value.lower().startswith(("http://", "https://")):
+        return stored_value, stored_value
+
+    if PUBLIC_ASSET_BASE_URL:
+        public_url = PUBLIC_ASSET_BASE_URL.rstrip("/") + "/" + quote(
+            stored_value.strip("/"),
+            safe="/",
+        )
+        return public_url, public_url
+
+    return stored_value, presign_r2_get(stored_value)
 
 
 def download_pdf(url, dest_path):

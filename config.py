@@ -29,6 +29,15 @@ MONGODB_WEB_CURRENT_AFFAIRS_COLLECTION = "currentaffairs"
 
 MONGODB_DATA_CHUNKS_COLLECTION = "sumati_ias_data_chunks"
 
+# Optional public base for files stored as object keys, for example
+# https://assets.example.com . When unset, keys are signed for download.
+PUBLIC_ASSET_BASE_URL = os.getenv("PUBLIC_ASSET_BASE_URL", "").strip()
+
+CF_ACCESS_KEY_ID = os.getenv("CF_ACCESS_KEY_ID")
+CF_SECRET_ACCESS_KEY = os.getenv("CF_SECRET_ACCESS_KEY")
+CF_S3_API_ENDPOINT = os.getenv("CF_S3_API_ENDPOINT", "").strip()
+CF_S3_BUCKET_NAME = os.getenv("CF_S3_BUCKET_NAME", "").strip()
+
 VECTOR_INDEX_NAME = "lecture_vector_index"
 
 SUMATI_IAS_DATA_CHUNKS_VECTOR_INDEX_NAME = "sumati_ias_data_chunks_vector_index"
