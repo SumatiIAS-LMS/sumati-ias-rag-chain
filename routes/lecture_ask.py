@@ -1,7 +1,13 @@
 from flask import Blueprint, jsonify
 
 from server import request_data
-from rag_chain import lecture_exists, save_question, get_qa_chain, save_conversation
+from rag_chain import (
+    answer_lecture_question,
+    lecture_exists,
+    save_question,
+    get_qa_chain,
+    save_conversation,
+)
 
 # Create the blueprint with a name and URL prefix
 lecture_ask_bp = Blueprint("ask-lecture" , __name__)
@@ -47,9 +53,7 @@ def ask():
 
         save_question(user_id, lecture_id, question)
 
-        result = chain.invoke({
-            "question": question
-        })
+        result = answer_lecture_question(question, chain)
 
         save_conversation(user_id, lecture_id, memory)
 

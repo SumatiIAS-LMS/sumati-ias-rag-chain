@@ -2,12 +2,14 @@ import os
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langsmith import traceable
 
 from config import CHUNK_SIZE, CHUNK_OVERLAP
 from rag_chain import get_vector_store, collection
 from bson import ObjectId
 
 
+@traceable(name="ingest_pdf", run_type="chain", tags=["ingest", "lecture"])
 def ingest_pdf(file_path, lecture_id):
     """Load a PDF into its own vector database."""
     if not os.path.isfile(file_path):

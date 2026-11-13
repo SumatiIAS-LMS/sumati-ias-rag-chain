@@ -11,6 +11,7 @@ from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_core.messages import HumanMessage, AIMessage
 from datetime import datetime, timezone, timedelta
 from langchain_core.runnables import RunnableLambda
+from langsmith import traceable
 
 from bson import ObjectId
 
@@ -75,6 +76,20 @@ def get_embeddings():
         )
 
     return _embeddings
+
+
+def _embedding_trace_outputs(vectors):
+    dimensions = len(vectors[0]) if vectors else 0
+    return {"count": len(vectors), "dimensions": dimensions}
+
+
+@traceable(
+    name="embed_documents",
+    run_type="embedding",
+    process_outputs=_embedding_trace_outputs,
+)
+def embed_documents(texts):
+    return get_embeddings().embed_documents(texts)
 
 def get_vector_store():
 
@@ -218,6 +233,7 @@ def _history_messages(messages):
     return converted
 
 
+@traceable(name="standalone_question", run_type="llm")
 def _standalone_question(question, history):
     if not history:
         return question
@@ -388,7 +404,7 @@ def _web_source(document):
     }
 
 
-
+@traceable(name="answer_web_question", run_type="chain", tags=["web"])
 def answer_web_question(question, chat_history=None):
     """Answer from all scraped web chunks, using this browser's saved chat only."""
 
@@ -400,6 +416,7 @@ def answer_web_question(question, chat_history=None):
         search_kwargs={"k": 4},
     )
 
+    @traceable(name="retrieve_web_chunks", run_type="retriever")
     def retrieve(inputs):
         return retriever.invoke(
             inputs.get("search_input") or inputs["input"]
@@ -438,6 +455,20 @@ def answer_web_question(question, chat_history=None):
         "answer": answer,
         "sources": sources,
     }
+
+
+def _lecture_question_inputs(inputs):
+    return {"question": inputs.get("question")}
+
+
+@traceable(
+    name="answer_lecture_question",
+    run_type="chain",
+    tags=["lecture"],
+    process_inputs=_lecture_question_inputs,
+)
+def answer_lecture_question(question, chain):
+    return chain.invoke({"question": question})
 
 
 def build_rag_chain(lecture_id, memory):

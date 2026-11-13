@@ -11,6 +11,7 @@ from bson import ObjectId
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_mongodb.index import create_vector_search_index
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langsmith import traceable
 from pymongo import ASCENDING
 
 from config import (
@@ -19,7 +20,7 @@ from config import (
     SUMATI_IAS_DATA_CHUNKS_VECTOR_INDEX_NAME,
     EMBEDDING_DIMENSIONS,
 )
-from rag_chain import get_embeddings
+from rag_chain import embed_documents
 
 _indexes_ready = False
 
@@ -116,6 +117,7 @@ def _ensure_vector_index(chunks_collection) -> None:
         print(f"[WARN] vector search index was not created: {exc}")
 
 
+@traceable(name="ingest_web_pages", run_type="chain", tags=["ingest", "web"])
 def ingest_web_pages(pages: list[dict], chunks_collection) -> dict:
     """Fetch each page, split it, embed the chunks, and store one record per chunk.
 
@@ -166,7 +168,7 @@ def ingest_web_pages(pages: list[dict], chunks_collection) -> dict:
         now = datetime.now(timezone.utc)
         document_oid = ObjectId(document_id)
         try:
-            vectors = get_embeddings().embed_documents(chunks)
+            vectors = embed_documents(chunks)
             if len(vectors) != len(chunks):
                 raise ValueError("embedding count did not match the chunks")
 
@@ -211,6 +213,7 @@ def ingest_web_pages(pages: list[dict], chunks_collection) -> dict:
     }
 
 
+@traceable(name="ingest_extracted_documents", run_type="chain", tags=["ingest", "web"])
 def ingest_extracted_documents(documents: list[dict], chunks_collection) -> dict:
     """Chunk, embed, and store text using the same records as scraped pages.
 
@@ -253,7 +256,7 @@ def ingest_extracted_documents(documents: list[dict], chunks_collection) -> dict
         now = datetime.now(timezone.utc)
         document_oid = ObjectId(document_id)
         try:
-            vectors = get_embeddings().embed_documents(chunks)
+            vectors = embed_documents(chunks)
             if len(vectors) != len(chunks):
                 raise ValueError("embedding count did not match the chunks")
 
