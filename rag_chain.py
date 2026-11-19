@@ -714,9 +714,20 @@ def answer_web_question(question, chat_history=None):
     search_question = _standalone_question(question, history)
 
     retriever = get_public_data_vector_store().as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 4},
+        search_type="similarity_score_threshold",
+        search_kwargs={
+            "k": 4,
+            "score_threshold": 0.82 # relevancy score threshold for finding documents
+        }
     )
+
+    # results = get_public_data_vector_store().similarity_search_with_relevance_scores("INS Betwa", k=4)
+
+    # for doc, score in results:
+    #     print(f"Score: {score:.4f}")
+    #     print(f"Source: {doc.metadata.get('sourceUrl')}")
+    #     print(f"Content: {doc.page_content[:300]}")
+    #     print("-" * 80)
 
     @traceable(name="retrieve_web_chunks", run_type="retriever")
     def retrieve(inputs):
