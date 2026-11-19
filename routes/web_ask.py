@@ -63,9 +63,10 @@ def ask_web():
         from server import signed_source_url
 
         for source in result["sources"] or []:
-            if(source["resourceType"] == "MAGAZINES"):
+            if isinstance(source, dict) and source.get("resourceType") == "MAGAZINES":
                 signed = dict(source)
                 signed["sourceUrl"] = (f"/magazine-ebook?id={signed["documentId"]}")
+                signed.setdefault("sourceDestination", "sumati-ias")
                 sources.append(signed)
             else:
                 if not isinstance(source, dict):
@@ -77,6 +78,7 @@ def ask_web():
                     signed.get("sourceUrl") or "",
                     signed_urls,
                 )
+                signed.setdefault("sourceDestination", "sumati-ias")
                 sources.append(signed)
 
         return jsonify({

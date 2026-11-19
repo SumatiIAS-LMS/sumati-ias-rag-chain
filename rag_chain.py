@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from datetime import datetime, timezone, timedelta
 from langchain_core.runnables import RunnableLambda
 from langsmith import traceable
+from pydantic import BaseModel, Field
 
 from bson import ObjectId
 
@@ -117,6 +118,7 @@ def get_public_data_vector_store():
 
 
 
+
 _WEB_QA_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -190,6 +192,105 @@ Follow this priority strictly:
    - Prefer a shorter complete answer over a longer answer containing
      unnecessary details.
 
+6. RESPONSE FORMATTING - MARKDOWN:
+   - Format all responses using clean, standard Markdown wherever
+     formatting improves readability.
+   - The response must be directly renderable by a Markdown renderer.
+   - Do not output raw HTML tags.
+   - Do not wrap the entire response in code blocks.
+   - Do not include Markdown formatting instructions in the answer.
+
+   STRUCTURAL FORMATTING:
+
+    - When an answer contains distinct sections, format section titles
+    using Markdown headings (## or ###), not plain-text labels.
+    - Never leave section titles as standalone unformatted text.
+    - When an answer contains a definition followed by multiple sections,
+    use a clear heading for each section.
+    - For multi-part explanatory answers, visually distinguish the
+    sections from their content.
+
+    KEYWORD HIGHLIGHTING:
+
+    - Bold important terms, concepts, names, constitutional articles,
+    institutions, categories, and key phrases using **bold**.
+    - Bold the label at the beginning of bullet points when it introduces
+    an important concept or category.
+    - Do not bold entire sentences or paragraphs.
+    - Use bold emphasis consistently throughout the response.
+
+    LIST FORMATTING:
+
+    - Use Markdown bullet lists for features, functions, powers,
+    characteristics, causes, effects, and classifications.
+    - When listing multiple powers or functions, use numbered lists
+    where each item has a short bold title followed by its explanation.
+    - Do not place multiple list items within a single paragraph.
+    - Maintain proper indentation for nested lists.
+
+    READABILITY:
+
+    - Separate headings, paragraphs, and lists with appropriate blank lines.
+    - Avoid consecutive sections without spacing.
+    - Do not output section titles without Markdown heading markers.
+    - Never return an answer as one large paragraph when the content
+    contains multiple distinct points.
+
+   PARAGRAPHS:
+   - Separate distinct ideas into individual paragraphs.
+   - Avoid excessively long paragraphs or continuous blocks of text.
+   - Keep paragraphs concise and easy to scan.
+
+   HEADINGS:
+   - Use Markdown headings (## or ###) only when the answer contains
+     multiple distinct sections that genuinely need organization.
+   - Do not use headings for simple, direct, or short answers.
+   - Avoid generic headings such as "Introduction", "Overview",
+     "Conclusion", or "Answer" unless genuinely necessary.
+
+   EMPHASIS:
+   - Use **bold** to highlight important concepts, keywords,
+     constitutional articles, terms, names, or significant facts.
+   - Use bold emphasis selectively and only where it improves clarity.
+   - Do not bold entire paragraphs or overuse emphasis.
+
+   LISTS:
+   - Use unordered lists (-) for related points, characteristics,
+     features, causes, effects, or multiple facts.
+   - Use ordered lists (1.) for sequential steps, processes,
+     procedures, or ranked items.
+   - Keep list items concise and grammatically clear.
+   - Do not convert every response into a list unnecessarily.
+
+   COMPARISONS:
+   - Use Markdown tables when multiple items need to be compared
+     across common attributes.
+   - Keep tables simple, concise, and relevant.
+   - Avoid tables for simple explanations or when they reduce
+     readability, especially on mobile screens.
+
+   QUOTATIONS AND IMPORTANT INFORMATION:
+   - Use Markdown blockquotes (>) only for meaningful quotations,
+     definitions, or important statements that deserve emphasis.
+   - Do not create artificial callout boxes using Markdown.
+   - Clearly distinguish a factual statement from a quotation.
+
+   MATHEMATICAL AND TECHNICAL CONTENT:
+   - Format mathematical expressions appropriately when necessary.
+   - Use inline code only for actual technical terms, commands,
+     identifiers, or code.
+   - Use fenced code blocks only when the student explicitly asks
+     for code or when code is necessary to answer the question.
+
+   FINAL FORMATTING GUIDELINES:
+   - Formatting must improve clarity, not increase response length.
+   - Do not force headings, bullets, tables, bold text, or other
+     Markdown elements into every response.
+   - Maintain a natural, educational, professional tone.
+   - Ensure the final answer is clean, readable, and well-structured.
+   - Return only the answer to the student without any additional
+     commentary about how it was formatted.
+
 Provided Context:
 {context}
         """,
@@ -199,10 +300,126 @@ Provided Context:
 ])
 
 
+class _ExternalCitation(BaseModel):
+    title: str = Field(
+        description="Real name of the external publication, institution, or document. Never invent a name."
+    )
+    sourceUrl: str = Field(
+        default="",
+        description="https URL only when it is certainly the correct canonical page. Otherwise an empty string.",
+    )
+
+
+class _AnswerCoverage(BaseModel):
+    answerCoveredByContext: bool = Field(
+        description="True only when every material claim in the answer is supported by the retrieved Sumati IAS sources."
+    )
+    externalSources: list[_ExternalCitation] = Field(
+        default_factory=list,
+        description="Authorities used for claims the retrieved sources do not support. Empty when the context covers the answer.",
+    )
+
+
+_SOURCE_COVERAGE_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """
+You compare a student answer with the Sumati IAS sources that were retrieved for it.
+
+Decide whether those retrieved sources fully support the answer.
+Treat rephrasing, summaries, and general wording of facts that appear
+in the retrieved sources as covered.
+
+Set answerCoveredByContext to false only when the answer states specific
+facts, figures, names, dates, or explanations that are not present in
+the retrieved sources.
+
+When the retrieved sources do not cover the answer, list the external
+authorities needed for the unsupported parts.
+- Do not list a retrieved Sumati IAS source as an external source.
+- Name only real publications, institutions, or official documents.
+- Include a URL only when you are certain it is the correct canonical page.
+- If you would have to guess a title or a URL, omit that source.
+- If the retrieved sources fully support the answer, return no external sources.
+- Return at most 5 external sources.
+        """,
+    ),
+    (
+        "human",
+        """
+Question:
+{question}
+
+Answer:
+{answer}
+
+Retrieved Sumati IAS sources:
+{sources}
+        """,
+    ),
+])
+
+
+
+
 _STANDALONE_QUESTION_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
-        "Rewrite the latest user question as one standalone question using the chat history. Return only the rewritten question.",
+        """
+You are a question-rewriting assistant for Sumati IAS.
+
+Your task is to rewrite the latest user question into a standalone,
+contextually complete question using the conversation history.
+
+STRICT RULES:
+
+1. INTENT PRESERVATION:
+   - Preserve the exact intent, meaning, and scope of the latest
+     user question.
+   - Do not change what the user is asking.
+   - Do not make the question broader, narrower, or more specific
+     than the original question.
+
+2. CONTEXT RESOLUTION:
+   - Use conversation history only to resolve references, missing
+     context, entities, topics, or subjects.
+   - Resolve pronouns and vague references such as "it", "this",
+     "that", "they", "he", "she", "its", or "those" wherever
+     their meaning is clear from the conversation history.
+   - Include the relevant topic, entity, concept, or context in
+     the rewritten question so it can be understood independently.
+   - Do not unnecessarily repeat the entire conversation context.
+
+3. ACCURACY:
+   - Do not answer the question.
+   - Do not add facts, assumptions, explanations, examples,
+     or information not present in the original question
+     or conversation history.
+   - Do not infer missing information without sufficient context.
+   - If the conversation history does not provide enough information
+     to resolve a reference, preserve the original question rather
+     than guessing.
+
+4. QUESTION NORMALIZATION:
+   - Rewrite the question using clear, natural, grammatically
+     correct language.
+   - Remove unnecessary conversational wording only when doing so
+     does not change the user's intent.
+   - Ensure the rewritten question is contextually complete and
+     suitable for semantic search and information retrieval.
+   - If the latest question is already standalone, return it
+     unchanged except for minor grammatical improvements if necessary.
+
+5. OUTPUT RULES:
+   - Return exactly one standalone question.
+   - Do not include introductory text, explanations, alternatives,
+     answers, or reasoning.
+   - Do not include labels such as "Rewritten question:".
+   - Do not use Markdown formatting.
+   - Do not wrap the output in quotation marks.
+   - Return only the rewritten question.
+
+"""
     ),
     MessagesPlaceholder("chat_history"),
     ("human", "{input}"),
@@ -354,9 +571,10 @@ def get_web_history(user_id):
         # print(message.get("sources"))
         sources = []
         for source in message.get("sources") or []:
-            if(source["resourceType"] == "MAGAZINES"):
+            if isinstance(source, dict) and source.get("resourceType") == "MAGAZINES":
                 signed = dict(source)
                 signed["sourceUrl"] = (f"/magazine-ebook?id={signed["documentId"]}")
+                signed.setdefault("sourceDestination", "sumati-ias")
                 sources.append(signed)
             else:
                 if not isinstance(source, dict):
@@ -368,6 +586,7 @@ def get_web_history(user_id):
                     signed.get("sourceUrl") or "",
                     signed_urls,
                 )
+                signed.setdefault("sourceDestination", "sumati-ias")
                 sources.append(signed)
 
         messages.append({
@@ -402,7 +621,89 @@ def _web_source(document):
         "sourceUrl": metadata.get("sourceUrl") or "",
         "title": metadata.get("title") or metadata.get("pageTitle") or "",
         "chunkIndex": metadata.get("chunkIndex"),
+        "sourceDestination": "sumati-ias",
     }
+
+
+def _retrieved_source_brief(documents):
+    lines = []
+    for index, document in enumerate(documents or [], start=1):
+        metadata = document.metadata or {}
+        title = metadata.get("title") or metadata.get("pageTitle") or ""
+        source_url = metadata.get("sourceUrl") or ""
+        text = " ".join((getattr(document, "page_content", "") or "").split())
+        if len(text) > 700:
+            text = text[:700] + "..."
+        lines.append(
+            f"[{index}] title={title}\nsourceUrl={source_url}\ntext={text}"
+        )
+    return "\n\n".join(lines) if lines else "(none)"
+
+
+def _citation_field(citation, key):
+    if isinstance(citation, dict):
+        return citation.get(key) or ""
+    return getattr(citation, key, "") or ""
+
+
+def _external_source(citation):
+    title = str(_citation_field(citation, "title") or "").strip()
+    source_url = str(_citation_field(citation, "sourceUrl") or "").strip()
+    if source_url and not source_url.lower().startswith(("http://", "https://")):
+        source_url = ""
+    if not title and not source_url:
+        return None
+    return {
+        "documentId": "",
+        "resourceType": "",
+        "sourceUrl": source_url,
+        "title": title or source_url,
+        "chunkIndex": None,
+        "sourceDestination": "external-source",
+    }
+
+
+def _matches_listed_source(candidate, sources):
+    title = (candidate.get("title") or "").strip().lower()
+    source_url = (candidate.get("sourceUrl") or "").strip().lower()
+    for source in sources:
+        if source_url and (source.get("sourceUrl") or "").strip().lower() == source_url:
+            return True
+        if title and (source.get("title") or "").strip().lower() == title:
+            return True
+    return False
+
+
+@traceable(name="classify_web_sources", run_type="chain", tags=["web"])
+def _external_citations(question, answer, documents):
+    """Name outside authorities only when the dataset does not cover the answer."""
+    if not (answer or "").strip():
+        return []
+
+    try:
+        coverage = (
+            _SOURCE_COVERAGE_PROMPT
+            | ChatOpenAI(model=LLM_MODEL, temperature=0).with_structured_output(
+                _AnswerCoverage
+            )
+        ).invoke({
+            "question": question,
+            "answer": answer,
+            "sources": _retrieved_source_brief(documents),
+        })
+    except Exception:
+        return []
+
+    if isinstance(coverage, dict):
+        covered = coverage.get("answerCoveredByContext")
+        citations = coverage.get("externalSources") or []
+    else:
+        covered = getattr(coverage, "answerCoveredByContext", True)
+        citations = getattr(coverage, "externalSources", None) or []
+
+    if covered:
+        return []
+    return list(citations)[:5]
 
 
 @traceable(name="answer_web_question", run_type="chain", tags=["web"])
@@ -440,17 +741,26 @@ def answer_web_question(question, chat_history=None):
         "chat_history": history,
     })
 
+    print(result)
+
     answer = result.get("answer") or ""
 
     if not isinstance(answer, str):
         answer = getattr(answer, "content", str(answer))
 
     sources = []
+    context_documents = result.get("context") or []
 
-    for document in result.get("context") or []:
+    for document in context_documents:
         source = _web_source(document)
         if not any(existing["documentId"] == source["documentId"] for existing in sources):
             sources.append(source)
+
+    for citation in _external_citations(question, answer, context_documents):
+        external = _external_source(citation)
+        if external is None or _matches_listed_source(external, sources):
+            continue
+        sources.append(external)
 
     return {
         "answer": answer,
