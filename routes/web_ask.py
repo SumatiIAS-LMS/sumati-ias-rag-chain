@@ -22,6 +22,8 @@ def ask_web():
     question = data.get("question") or ""
     user_id = data.get("userId") or ""
 
+    print(data)
+
     if not isinstance(question, str) or not question.strip():
         return jsonify({"error": "question is required"}), 400
 
@@ -63,16 +65,26 @@ def ask_web():
         from server import signed_source_url
 
         for source in result["sources"] or []:
-            if isinstance(source, dict) and source.get("resourceType") == "MAGAZINES":
+            if not isinstance(source, dict):
+                sources.append(source)
+                continue
+
+            if source.get("sourceDestination") == "external-source":
+                source_url = (source.get("sourceUrl") or "").strip()
+                if not source_url.lower().startswith(("http://", "https://")):
+                    continue
+                external = dict(source)
+                external["sourceUrl"] = source_url
+                external["sourceDestination"] = "external-source"
+                sources.append(external)
+                continue
+
+            if source.get("resourceType") == "MAGAZINES":
                 signed = dict(source)
                 signed["sourceUrl"] = (f"/magazine-ebook?id={signed["documentId"]}")
                 signed.setdefault("sourceDestination", "sumati-ias")
                 sources.append(signed)
             else:
-                if not isinstance(source, dict):
-                    sources.append(source)
-                    continue
-
                 signed = dict(source)
                 signed["sourceUrl"] = signed_source_url(
                     signed.get("sourceUrl") or "",

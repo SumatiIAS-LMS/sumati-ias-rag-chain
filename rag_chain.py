@@ -157,20 +157,34 @@ Follow this priority strictly:
    - Never invent or assume information from external sources.
 
 4. ANSWERING RULES:
+   - Answer the question directly. State the facts and stop.
    - Never invent facts, statistics, dates, quotations, or references.
    - If the provided resources sufficiently answer the question,
      do not introduce unnecessary external information.
-   - If external information is required, use it only for the missing
-     portions of the answer.
-   - If reliable information is unavailable, clearly state that the
-     answer could not be verified.
-   - If provided resources and external information conflict,
-     prioritize the provided resources when explaining their content
-     and mention important discrepancies.
+   - If the provided resources only partly cover the question, complete
+     the answer from reliable external knowledge. Do not describe what
+     was missing, partial, or unverified.
+   - Never tell the student that information is missing, incomplete,
+     unverified, or unavailable in the provided resources, excerpts,
+     context, or sources.
+   - Never write headings or sentences such as "from the provided
+     resource", "what is known", "missing details", "unverified
+     details", "not available in the provided resources", or
+     "exact commitments not provided".
+   - Never mention sources, resources, context, excerpts, signatory
+     lists being incomplete, or how the answer was assembled. Source
+     links are attached separately and must not be discussed.
+   - Never offer to retrieve, look up, or summarize anything further.
+   - Never ask the student to confirm, reply, or request a follow-up
+     before you answer.
+   - If provided resources and reliable external information conflict,
+     give the answer from the provided resources without describing
+     the conflict as a gap in the source.
+   - Only when no reliable facts exist at all, reply in one short
+     sentence that the answer could not be verified. Do not list
+     missing items.
    - Never mention internal retrieval processes, vector databases,
-     embeddings, or retrieved context.
-   - Never claim an external search was performed unless external
-     information was actually provided.
+     embeddings, searches, or retrieved context.
 
 5. RESPONSE STYLE - STRICTLY FOLLOW:
    - Answer exactly what the student has asked.
@@ -178,7 +192,8 @@ Follow this priority strictly:
    - Keep every response short, precise, relevant, and to the point.
    - Include only information necessary to answer the question.
    - Do not provide unnecessary background, introductions,
-     conclusions, summaries, or explanations.
+     conclusions, summaries, caveats, or explanations.
+   - Do not end with an offer, a question, or an invitation to continue.
    - Do not add examples, comparisons, or additional facts unless
      they are specifically requested or essential for clarity.
    - Avoid repeating information already mentioned in the conversation.
@@ -305,8 +320,11 @@ class _ExternalCitation(BaseModel):
         description="Real name of the external publication, institution, or document. Never invent a name."
     )
     sourceUrl: str = Field(
-        default="",
-        description="https URL only when it is certainly the correct canonical page. Otherwise an empty string.",
+        description=(
+            "Required canonical http:// or https:// URL of this external source. "
+            "Use the specific official or publisher page a student can open. "
+            "Never leave this empty, and never return a source you cannot link."
+        ),
     )
 
 
@@ -338,8 +356,11 @@ When the retrieved sources do not cover the answer, list the external
 authorities needed for the unsupported parts.
 - Do not list a retrieved Sumati IAS source as an external source.
 - Name only real publications, institutions, or official documents.
-- Include a URL only when you are certain it is the correct canonical page.
-- If you would have to guess a title or a URL, omit that source.
+- Every external source must include sourceUrl. It is required, not optional.
+- sourceUrl must be the real canonical http:// or https:// page for that
+  source, specific enough for a student to open the document or article.
+- If you cannot give both a real title and a real https URL, omit that
+  source. Never return an external source with an empty or missing URL.
 - If the retrieved sources fully support the answer, return no external sources.
 - Return at most 5 external sources.
         """,
@@ -571,16 +592,26 @@ def get_web_history(user_id):
         # print(message.get("sources"))
         sources = []
         for source in message.get("sources") or []:
-            if isinstance(source, dict) and source.get("resourceType") == "MAGAZINES":
+            if not isinstance(source, dict):
+                sources.append(source)
+                continue
+
+            if source.get("sourceDestination") == "external-source":
+                source_url = (source.get("sourceUrl") or "").strip()
+                if not source_url.lower().startswith(("http://", "https://")):
+                    continue
+                external = dict(source)
+                external["sourceUrl"] = source_url
+                external["sourceDestination"] = "external-source"
+                sources.append(external)
+                continue
+
+            if source.get("resourceType") == "MAGAZINES":
                 signed = dict(source)
                 signed["sourceUrl"] = (f"/magazine-ebook?id={signed["documentId"]}")
                 signed.setdefault("sourceDestination", "sumati-ias")
                 sources.append(signed)
             else:
-                if not isinstance(source, dict):
-                    sources.append(source)
-                    continue
-
                 signed = dict(source)
                 signed["sourceUrl"] = signed_source_url(
                     signed.get("sourceUrl") or "",
@@ -649,9 +680,7 @@ def _citation_field(citation, key):
 def _external_source(citation):
     title = str(_citation_field(citation, "title") or "").strip()
     source_url = str(_citation_field(citation, "sourceUrl") or "").strip()
-    if source_url and not source_url.lower().startswith(("http://", "https://")):
-        source_url = ""
-    if not title and not source_url:
+    if not source_url.lower().startswith(("http://", "https://")):
         return None
     return {
         "documentId": "",
@@ -691,6 +720,7 @@ def _external_citations(question, answer, documents):
             "answer": answer,
             "sources": _retrieved_source_brief(documents),
         })
+
     except Exception:
         return []
 
@@ -716,7 +746,7 @@ def answer_web_question(question, chat_history=None):
     retriever = get_public_data_vector_store().as_retriever(
         search_type="similarity_score_threshold",
         search_kwargs={
-            "k": 4,
+            "k": 1,
             "score_threshold": 0.82 # relevancy score threshold for finding documents
         }
     )
