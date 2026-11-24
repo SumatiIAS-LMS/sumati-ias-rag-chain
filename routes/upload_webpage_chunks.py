@@ -45,7 +45,7 @@ def upload_webpage_chunks():
 
     cursor = collection.find(
         {"_id": {"$in": [ObjectId(d) for d in docIds]}},
-        {title_field: 1, "slug": 1},
+        {title_field: 1, "slug": 1, "updatedAt": 1},
     )
     found = {str(doc["_id"]): doc for doc in cursor}
     not_found = [doc_id for doc_id in docIds if doc_id not in found]
@@ -87,6 +87,7 @@ def upload_webpage_chunks():
             "sourceCollection": collection_name,
             "title": title,
             "slug": slug,
+            "updatedAt": doc.get("updatedAt"),
         })
 
     if not pages:

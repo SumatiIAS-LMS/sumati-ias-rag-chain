@@ -8,11 +8,13 @@ from langchain_openai import ChatOpenAI
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from pymongo import ASCENDING, MongoClient, ReturnDocument
 from langchain_mongodb import MongoDBAtlasVectorSearch
+from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, AIMessage
 from datetime import datetime, timezone, timedelta
+from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import RunnableLambda
 from langsmith import traceable
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from bson import ObjectId
 
@@ -139,13 +141,30 @@ Follow this priority strictly:
    - Do not ignore relevant information in favor of unnecessary
      external explanations.
 
-2. SECOND PRIORITY - CONVERSATION HISTORY:
+2. **TEMPORAL RELEVANCE AND INFORMATION PRIORITY:**
+
+- Always prioritize the latest applicable and verifiable information among the provided resources.
+- Examine the publication date of each document before using its information.
+- When multiple documents contain information about the same subject, compare their publication dates and identify whether newer documents update, correct, replace, or supersede older information.
+- Prefer the newer document when it explicitly provides updated information or supersedes an earlier version.
+- Do not automatically discard older information merely because a newer document exists. Older information may remain valid if the newer document does not address or change it.
+- Distinguish between a document's publication date and the date on which the reported event, policy, or information became effective.
+- Never assume that a newer publication automatically means every fact in it is more accurate or applicable.
+- Consider the authority and reliability of the source when resolving conflicting information. Prefer relevant official government notifications, reports, and publications over secondary summaries.
+- If two sources conflict and the available evidence does not establish which information is currently applicable, do not arbitrarily select one. Use the most defensible information and avoid presenting unresolved claims as confirmed facts.
+- If publication dates are unavailable, do not assume which document is newer.
+- Never invent publication dates, updated figures, policy changes, or supersession relationships.
+- For questions explicitly asking about historical information, use information applicable to the requested historical period rather than automatically using the latest information.
+
+**IMPORTANT:** The latest applicable information must take precedence over outdated information, regardless of the order in which documents are retrieved.
+
+3. SECOND PRIORITY - CONVERSATION HISTORY:
    - Examine previous messages to understand the current question,
      references, and follow-up queries.
    - Use earlier messages wherever they provide relevant information.
    - Do not ask the student to repeat information already available.
 
-3. THIRD PRIORITY - EXTERNAL INFORMATION:
+4. THIRD PRIORITY - EXTERNAL INFORMATION:
    - Only when the provided resources and conversation history do not
      contain sufficient information, use relevant external information.
    - Use external information only to fill the missing gaps or answer
@@ -156,7 +175,7 @@ Follow this priority strictly:
      and reputed institutional sources.
    - Never invent or assume information from external sources.
 
-4. ANSWERING RULES:
+5. ANSWERING RULES:
    - Answer the question directly. State the facts and stop.
    - Never invent facts, statistics, dates, quotations, or references.
    - If the provided resources sufficiently answer the question,
@@ -178,15 +197,18 @@ Follow this priority strictly:
    - Never ask the student to confirm, reply, or request a follow-up
      before you answer.
    - If provided resources and reliable external information conflict,
-     give the answer from the provided resources without describing
-     the conflict as a gap in the source.
+     prioritize the latest applicable and authoritative information.
+   - Do not automatically prefer provided resources if they contain
+     outdated information.
+   - Never present outdated information as current when newer,
+     reliable evidence establishes an update.
    - Only when no reliable facts exist at all, reply in one short
      sentence that the answer could not be verified. Do not list
      missing items.
    - Never mention internal retrieval processes, vector databases,
      embeddings, searches, or retrieved context.
 
-5. RESPONSE STYLE - STRICTLY FOLLOW:
+6. RESPONSE STYLE - STRICTLY FOLLOW:
    - Answer exactly what the student has asked.
    - Answer must be within a strict limit of 200-250 words.
    - Keep every response short, precise, relevant, and to the point.
@@ -207,7 +229,7 @@ Follow this priority strictly:
    - Prefer a shorter complete answer over a longer answer containing
      unnecessary details.
 
-6. RESPONSE FORMATTING - MARKDOWN:
+7. RESPONSE FORMATTING - MARKDOWN:
    - Format all responses using clean, standard Markdown wherever
      formatting improves readability.
    - The response must be directly renderable by a Markdown renderer.
@@ -461,6 +483,66 @@ def _utc(value):
     return value.astimezone(timezone.utc)
 
 
+def document_publish_date(value):
+    """Return a source document's updatedAt as a UTC datetime."""
+    if isinstance(value, datetime):
+        return _utc(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        if text:
+            try:
+                return _utc(datetime.fromisoformat(text))
+            except ValueError:
+                return None
+    return None
+
+
+def format_publish_date(value):
+    """Format a publication date for the model, without inventing one."""
+    published = document_publish_date(value)
+    if published is None:
+        return "unavailable"
+    return published.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _stamp_context_documents(documents):
+    """Put a readable publication date on every retrieved document."""
+    stamped = []
+    for document in documents or []:
+        metadata = dict(document.metadata or {})
+        metadata["documentPublishDate"] = format_publish_date(
+            metadata.get("documentPublishDate")
+        )
+        title = metadata.get("title") or metadata.get("pageTitle") or ""
+        metadata["title"] = title if isinstance(title, str) else str(title)
+        stamped.append(Document(
+            page_content=document.page_content,
+            metadata=metadata,
+        ))
+    return stamped
+
+
+class _PublishDateRetriever(BaseRetriever):
+    """Retriever that attaches each lecture chunk's publication date."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    retriever: object
+
+    def _get_relevant_documents(self, query, *, run_manager):
+        return _stamp_context_documents(self.retriever.invoke(query))
+
+
+_WEB_CONTEXT_DOCUMENT_PROMPT = PromptTemplate.from_template(
+    "Publication date: {documentPublishDate}\nTitle: {title}\n{page_content}"
+)
+
+_LECTURE_CONTEXT_DOCUMENT_PROMPT = PromptTemplate.from_template(
+    "Publication date: {documentPublishDate}\n{page_content}"
+)
+
+
 def _history_messages(messages):
     converted = []
     for message in messages:
@@ -662,11 +744,13 @@ def _retrieved_source_brief(documents):
         metadata = document.metadata or {}
         title = metadata.get("title") or metadata.get("pageTitle") or ""
         source_url = metadata.get("sourceUrl") or ""
+        published = metadata.get("documentPublishDate") or "unavailable"
         text = " ".join((getattr(document, "page_content", "") or "").split())
         if len(text) > 700:
             text = text[:700] + "..."
         lines.append(
-            f"[{index}] title={title}\nsourceUrl={source_url}\ntext={text}"
+            f"[{index}] title={title}\npublicationDate={published}\n"
+            f"sourceUrl={source_url}\ntext={text}"
         )
     return "\n\n".join(lines) if lines else "(none)"
 
@@ -746,7 +830,7 @@ def answer_web_question(question, chat_history=None):
     retriever = get_public_data_vector_store().as_retriever(
         search_type="similarity_score_threshold",
         search_kwargs={
-            "k": 1,
+            "k": 2,
             "score_threshold": 0.82 # relevancy score threshold for finding documents
         }
     )
@@ -761,9 +845,10 @@ def answer_web_question(question, chat_history=None):
 
     @traceable(name="retrieve_web_chunks", run_type="retriever")
     def retrieve(inputs):
-        return retriever.invoke(
+        documents = retriever.invoke(
             inputs.get("search_input") or inputs["input"]
         )
+        return _stamp_context_documents(documents)
 
     # Convert normal Python function into a LangChain Runnable
     retrieve_runnable = RunnableLambda(retrieve)
@@ -771,6 +856,7 @@ def answer_web_question(question, chat_history=None):
     combine_docs_chain = create_stuff_documents_chain(
         ChatOpenAI(model=LLM_MODEL, temperature=0),
         _WEB_QA_PROMPT,
+        document_prompt=_WEB_CONTEXT_DOCUMENT_PROMPT,
     )
 
     result = create_retrieval_chain(
@@ -849,6 +935,8 @@ def build_rag_chain(lecture_id, memory):
         template="""
             You are an AI Lecture Assistant. Answer using the provided context as your primary reference. Do not mention the context, retrieved documents, sources, or where the information came from.
 
+            Each excerpt includes a publication date. When excerpts disagree, prefer the latest applicable information.
+
             If the required information is missing or partially covered, supplement it using reliable online sources without mentioning the retrieval process. Never invent facts or present uncertain information as factual.
 
             Keep responses accurate, concise, clear, and student-friendly.
@@ -865,10 +953,11 @@ def build_rag_chain(lecture_id, memory):
 
     return ConversationalRetrievalChain.from_llm(
         llm=llm,
-        retriever=retriever,
+        retriever=_PublishDateRetriever(retriever=retriever),
         memory=memory,
         combine_docs_chain_kwargs={
-            "prompt": qa_prompt
+            "prompt": qa_prompt,
+            "document_prompt": _LECTURE_CONTEXT_DOCUMENT_PROMPT,
         }
     )
 

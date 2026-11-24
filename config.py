@@ -21,6 +21,8 @@ MONGODB_DATABASE = "sumatiias"
 
 MONGODB_COLLECTION = "lecture_chunks"
 
+MONGODB_LECTURES_COLLECTION = "lectures"
+
 MONGODB_WEB_EDITORIAL_COLLECTION = "webeditorials"
 
 MONGODB_WEB_HOT_TOPIC_COLLECTION = "webhottopics"

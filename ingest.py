@@ -4,8 +4,8 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langsmith import traceable
 
-from config import CHUNK_SIZE, CHUNK_OVERLAP
-from rag_chain import get_vector_store, collection
+from config import CHUNK_SIZE, CHUNK_OVERLAP, MONGODB_LECTURES_COLLECTION
+from rag_chain import database, document_publish_date, get_vector_store, collection
 from bson import ObjectId
 
 
@@ -19,6 +19,13 @@ def ingest_pdf(file_path, lecture_id):
         raise ValueError("lecture_id is required")
 
     lecture_id = lecture_id.strip()
+    lecture = database[MONGODB_LECTURES_COLLECTION].find_one(
+        {"_id": ObjectId(lecture_id)},
+        {"updatedAt": 1},
+    )
+    published = document_publish_date(
+        None if lecture is None else lecture.get("updatedAt")
+    )
 
     loader = PyPDFLoader(file_path)
     documents = loader.load()
@@ -41,6 +48,7 @@ def ingest_pdf(file_path, lecture_id):
         doc.metadata.update({
             "lectureId": ObjectId(lecture_id),
             "chunkIndex": index,
+            "documentPublishDate": published,
         })
 
     vectorstore = get_vector_store()

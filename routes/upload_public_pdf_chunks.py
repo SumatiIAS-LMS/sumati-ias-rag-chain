@@ -101,7 +101,7 @@ def _extract_pdf(file_path):
 
 def _prepare_documents(resource_type, doc_ids, collection_name, collection_files):
     query = {"_id": {"$in": [ObjectId(doc_id) for doc_id in doc_ids]}}
-    projection = {collection_files["title_field"]: 1}
+    projection = {collection_files["title_field"]: 1, "updatedAt": 1}
     for field in collection_files["url_fields"]:
         projection[field] = 1
 
@@ -174,6 +174,7 @@ def _prepare_documents(resource_type, doc_ids, collection_name, collection_files
                 "pageTitle": extracted["pageTitle"],
                 "pages": extracted["pages"],
                 "text": extracted["text"],
+                "updatedAt": document.get("updatedAt"),
             })
 
     return not_found, skipped, prepared

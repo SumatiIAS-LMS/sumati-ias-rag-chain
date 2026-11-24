@@ -20,7 +20,7 @@ from config import (
     SUMATI_IAS_DATA_CHUNKS_VECTOR_INDEX_NAME,
     EMBEDDING_DIMENSIONS,
 )
-from rag_chain import embed_documents
+from rag_chain import document_publish_date, embed_documents
 
 _indexes_ready = False
 
@@ -184,6 +184,7 @@ def ingest_web_pages(pages: list[dict], chunks_collection) -> dict:
                     "chunkIndex": index,
                     "text": chunk,
                     "embedding": _as_vector(vectors[index]),
+                    "documentPublishDate": document_publish_date(page.get("updatedAt")),
                     "createdAt": now,
                 }
                 for index, chunk in enumerate(chunks)
@@ -272,6 +273,7 @@ def ingest_extracted_documents(documents: list[dict], chunks_collection) -> dict
                     "chunkIndex": index,
                     "text": chunk,
                     "embedding": _as_vector(vectors[index]),
+                    "documentPublishDate": document_publish_date(document.get("updatedAt")),
                     "createdAt": now,
                 }
                 for index, chunk in enumerate(chunks)
